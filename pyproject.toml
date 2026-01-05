@@ -2,8 +2,8 @@
 requires = ["setuptools>=61.0"]
 
 [project]
-name = "sais_pyobs"
-version = "0.1.5"
+name = "sais-pyobs"
+version = "0.1.6"
 description = "A high-performance OBS transfer tool for AI datasets."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -11,7 +11,7 @@ license = {text = "MIT"}
 authors = [
   {name = "huangjiajia", email = "your.email@example.com"}
 ]
-
+urls = {Homepage = "https://github.com/huangpd/pyobs", Source = "https://github.com/huangpd/pyobs", Issues = "https://github.com/huangpd/pyobs/issues"}
 
 dependencies = [
     "requests>=2.25.0",

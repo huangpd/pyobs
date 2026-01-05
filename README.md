@@ -1,5 +1,8 @@
 # sais_pyobs
 
+[![PyPI version](https://badge.fury.io/py/sais-pyobs.svg)](https://badge.fury.io/py/sais-pyobs)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 一个为AI数据集设计的高性能、支持断点续传的华为云OBS流式上传工具。
 
 该库的核心功能是实现 **从一个数据流（如HTTP URL）到OBS的直接传输**，整个过程无需将文件完整保存在本地磁盘，非常适合大文件的迁移和备份。
