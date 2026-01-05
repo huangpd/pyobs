@@ -16,22 +16,16 @@
 
 ## 安装
 
-首先，请确保你安装了 Python 3.10 或更高版本。
+你可以通过 pip 直接从 PyPI 安装：
 
-1.  克隆本项目到本地：
-    ```bash
-    git clone <your-repo-url>
-    cd sais_pyobs
-    ```
+```bash
+pip install sais-pyobs --upgrade
+```
 
-2.  使用 pip 从本地源码安装：
-    ```bash
-    pip install .
-    ```
-    该命令会自动处理并安装所有在 `pyproject.toml` 中声明的依赖项，包括：
-    - `requests`
-    - `huaweicloud-sdk-python-obs`
-    - `tqdm`
+该命令会自动安装所有必要的依赖项，包括：
+- `requests`
+- `huaweicloud-sdk-python-obs`
+- `tqdm`
 
 ## 如何使用
 
