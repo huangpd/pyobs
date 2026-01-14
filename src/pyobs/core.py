@@ -65,7 +65,7 @@ class StreamUploader:
     华为云 OBS 流式上传工具 (支持断点续传)
     """
 
-    def __init__(self, ak=None, sk=None, server=None, bucket_name=None):
+    def __init__(self, ak=None, sk=None, server=None, bucket_name=None, part_size=20 * 1024 * 1024):
         # 优先从环境变量读取配置，支持无参初始化
         self.ak = ak or os.getenv("OBS_AK")
         self.sk = sk or os.getenv("OBS_SK")
@@ -78,8 +78,8 @@ class StreamUploader:
         self.client = ObsClient(access_key_id=self.ak, secret_access_key=self.sk, server=self.server)
 
         # --- 核心配置 ---
-        # 分片大小建议固定为 20MB，既能保证并发度，又适配流式场景
-        self.part_size = 20 * 1024 * 1024
+        # 分片大小默认 20MB，既能保证并发度，又适配流式场景
+        self.part_size = part_size
         self.max_workers = 5  # 并发上传线程数
         self.max_retries = 5  # 单个分片上传失败重试次数
 
@@ -137,6 +137,18 @@ class StreamUploader:
 
         logger.info(f"开始接收数据流，写入: {context.key} (Mode: {mode}, Offset: {context.offset})")
 
+        # 动态调整分片大小
+        current_part_size = self.part_size
+        if total_size and total_size > 0:
+            # OBS 分片数量上限为 10000。这里除以 9000 预留安全 Buffer，防止边缘溢出
+            min_part_size = (total_size // 9000) + 1
+            if min_part_size > current_part_size:
+                if context.offset == 0:
+                    logger.warning(f"文件大小 ({total_size}) 超过当前分片限制，自动调整分片大小为 {min_part_size}")
+                    current_part_size = min_part_size
+                else:
+                    logger.error(f"文件过大导致分片数超过 10000 上限 (需 {min_part_size} bytes/part)，但当前处于续传模式 (使用 {current_part_size} bytes/part)。请使用 mode='wb' 重新开始上传。")
+
         try:
             # 执行核心上传逻辑
             bytes_uploaded = self._process_stream(
@@ -144,7 +156,8 @@ class StreamUploader:
                 context.key,
                 context.upload_id,
                 context.next_part,
-                total_size
+                total_size,
+                current_part_size
             )
 
             # 只有流正常结束，才执行合并操作
@@ -202,7 +215,7 @@ class StreamUploader:
 
         return target_id, uploaded_bytes, next_part
 
-    def _process_stream(self, iterator, key, uid, start_part, total_size):
+    def _process_stream(self, iterator, key, uid, start_part, total_size, part_size):
         """读取流 -> 缓冲 -> 提交线程池"""
         buffer = BytesIO()
         part_number = start_part
@@ -216,7 +229,7 @@ class StreamUploader:
         # 进度条设置
         pbar = None
         if tqdm:
-            current_uploaded = (start_part - 1) * self.part_size
+            current_uploaded = (start_part - 1) * part_size
             pbar = tqdm(
                 total=total_size,
                 initial=current_uploaded,
@@ -241,7 +254,7 @@ class StreamUploader:
                             pbar.update(len(chunk))
 
                         # 缓冲区达到分片大小 -> 提交上传
-                        if buffer.tell() >= self.part_size:
+                        if buffer.tell() >= part_size:
                             data = buffer.getvalue()
 
                             f = executor.submit(self._upload_part_with_retry, key, uid, part_number, data)
@@ -299,7 +312,7 @@ class StreamUploader:
                     return resp.body.etag
                 else:
                     logger.warning(
-                        f"⚠️ 分片 #{p_num} 上传失败 (HTTP {resp.status})，正在重试 {i + 1}/{self.max_retries}...")
+                        f"⚠️ 分片 #{p_num} 上传失败 (HTTP {resp.status}, Code: {resp.errorCode}, Msg: {resp.errorMessage})，正在重试 {i + 1}/{self.max_retries}...")
 
             except Exception as ex:
                 logger.warning(f"❌ 分片 #{p_num} 发生异常: {ex}，正在重试 {i + 1}/{self.max_retries}...")

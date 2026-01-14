@@ -130,7 +130,7 @@ class TestStreamUploader(unittest.TestCase):
         self.uploader._fetch_uploaded_parts_map = MagicMock(return_value={})
 
         uploaded_bytes = self.uploader._process_stream(
-            iterator(), key, uid, start_part, total_size=25
+            iterator(), key, uid, start_part, total_size=25, part_size=10
         )
 
         self.assertEqual(uploaded_bytes, 25)
