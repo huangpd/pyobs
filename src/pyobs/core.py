@@ -246,6 +246,9 @@ class StreamUploader:
                 dynamic_ncols=True
             )
 
+        # 使用闭包变量来记录上一次报警的分片号，避免重复刷屏
+        last_warned_part = [-1]
+
         def calculate_dynamic_part_size(current_part, current_size, uploaded_bytes, total_file_size):
             """计算动态分片大小（在每个分片上传前调用）
             只有在分片号接近 SAFETY_THRESHOLD 时才调整
@@ -263,7 +266,12 @@ class StreamUploader:
                     new_size = estimated_remaining // remaining_parts
                     if new_size > current_size:
                         adjusted_size = max(new_size, self.MIN_PART_SIZE)
-                        logger.warning(f"分片 {current_part} 接近阈值 {self.SAFETY_THRESHOLD}，动态调整分片大小为 {adjusted_size} bytes")
+                        
+                        # 仅当当前分片还没报过警时，才打印日志
+                        if last_warned_part[0] != current_part:
+                            logger.warning(f"分片 {current_part} 接近阈值 {self.SAFETY_THRESHOLD}，动态调整分片大小为 {adjusted_size} bytes")
+                            last_warned_part[0] = current_part
+                            
                         return adjusted_size
             return current_size
 
