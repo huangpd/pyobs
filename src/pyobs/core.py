@@ -67,7 +67,7 @@ class StreamUploader:
 
     # --- 分片上传常量 ---
     MAX_PARTS = 10000  # OBS 分片上传的硬性上限
-    SAFETY_THRESHOLD = 8000  # 安全阈值，达到此分片数时开始动态调整
+    SAFETY_THRESHOLD = 5000  # 调整为 5000，提早介入，避免后期内存激增
     MIN_PART_SIZE = 5 * 1024 * 1024  # 5MB (S3/OBS 协议要求前 N-1 个分片 ≥ 5MB)
 
     def __init__(self, ak=None, sk=None, server=None, bucket_name=None,
@@ -145,13 +145,31 @@ class StreamUploader:
 
         # 动态调整分片大小
         current_part_size = self.part_size
-        # 如果用户传了 total_size，预先计算合适的分片大小
-        if total_size and total_size > 0 and context.offset == 0:
-            # OBS 分片数量上限为 MAX_PARTS。这里除以 SAFETY_THRESHOLD 预留安全 Buffer，防止边缘溢出
-            min_part_size = (total_size // self.SAFETY_THRESHOLD) + 1
-            if min_part_size > current_part_size:
-                logger.warning(f"文件大小 ({total_size}) 超过当前分片限制，自动调整分片大小为 {min_part_size} bytes")
-                current_part_size = min_part_size
+        
+        # 策略更新 (User Request):
+        # 1. 如果用户设置 total_size -> 即使小于 200G 也可能保持默认小分片 (20MB)
+        #    但如果文件巨大，使用 total_size / 9000 计算分片大小
+        if total_size and total_size > 0:
+            if context.offset == 0:
+                # 预留 1000 个分片作为安全缓冲 (MAX_PARTS=10000)
+                safe_parts_count = 9000 
+                # 向上取整
+                min_part_size = (total_size + safe_parts_count - 1) // safe_parts_count
+                
+                # 只有当计算出的分片大小 > 当前配置的大小时，才进行调整
+                # 意味着：如果文件只有 1GB，min_part_size ≈ 111KB。
+                # 此时我们依然使用 self.part_size (20MB)，保证效率。
+                if min_part_size > current_part_size:
+                    logger.warning(f"文件大小 ({total_size}) 较大，自动调整分片大小: {current_part_size} -> {min_part_size} bytes (目标分片数 ~9000)")
+                    current_part_size = min_part_size
+                    
+        # 2. 如果用户没有设置 total_size (流式) -> 默认 100MB
+        else:
+            # 强制提升到 100MB (支持 ~1TB)，推迟“紧急扩容”介入时间
+            DEFAULT_STREAM_PART_SIZE = 100 * 1024 * 1024
+            if current_part_size < DEFAULT_STREAM_PART_SIZE:
+                logger.info(f"未知总大小，自动将分片大小从 {current_part_size} 提升至 {DEFAULT_STREAM_PART_SIZE} 以支持大文件")
+                current_part_size = DEFAULT_STREAM_PART_SIZE
 
         try:
             # 执行核心上传逻辑
@@ -253,26 +271,51 @@ class StreamUploader:
             """计算动态分片大小（在每个分片上传前调用）
             只有在分片号接近 SAFETY_THRESHOLD 时才调整
             """
-            # 如果没有 total_size，不调整
-            if not total_file_size:
-                return current_size
-
             # 检查是否接近安全阈值
             if current_part >= self.SAFETY_THRESHOLD:
-                remaining_parts = self.MAX_PARTS - current_part
-                estimated_remaining = total_file_size - uploaded_bytes
+                # 情况A: 已知总大小 -> 精确计算剩余需要的平均大小
+                if total_file_size:
+                    remaining_parts = self.MAX_PARTS - current_part
+                    estimated_remaining = total_file_size - uploaded_bytes
 
-                if remaining_parts > 0 and estimated_remaining > 0:
-                    new_size = estimated_remaining // remaining_parts
-                    if new_size > current_size:
-                        adjusted_size = max(new_size, self.MIN_PART_SIZE)
-                        
-                        # 仅当当前分片还没报过警时，才打印日志
-                        if last_warned_part[0] != current_part:
-                            logger.warning(f"分片 {current_part} 接近阈值 {self.SAFETY_THRESHOLD}，动态调整分片大小为 {adjusted_size} bytes")
-                            last_warned_part[0] = current_part
+                    if remaining_parts > 0 and estimated_remaining > 0:
+                        new_size = estimated_remaining // remaining_parts
+                        if new_size > current_size:
+                            adjusted_size = max(new_size, self.MIN_PART_SIZE)
                             
-                        return adjusted_size
+                            if last_warned_part[0] != current_part:
+                                logger.warning(f"分片 {current_part} 接近阈值 {self.SAFETY_THRESHOLD} (From TotalSize)，动态调整分片大小为 {adjusted_size} bytes")
+                                last_warned_part[0] = current_part
+                                
+                            return adjusted_size
+                
+                # 情况B: 未知总大小 (流式) -> 紧急扩容
+                else:
+                    # 策略优化：从 5000 分片开始提早介入
+                    # 5000~10000 还有 5000 个分片空间。
+                    # 为了平摊内存压力，我们在 5000~8000 阶段温和增长，8000 后指数增长。
+                    
+                    ratio = (current_part - self.SAFETY_THRESHOLD) / (self.MAX_PARTS - self.SAFETY_THRESHOLD)
+                    # ratio 0.0 ~ 1.0 (5000 -> 10000)
+                    
+                    multiplier = 1
+                    if ratio > 0.8: # > 9000
+                        multiplier = 10 # 依然需要防止最后阶段溢出
+                    elif ratio > 0.6: # > 8000
+                        multiplier = 5 
+                    elif ratio > 0.4: # > 7000
+                        multiplier = 2
+                    elif ratio >= 0: # 5000 ~ 7000
+                        multiplier = 1.5 # 温和增长，避免内存突刺
+                        
+                    # 注意：int() 转换
+                    new_size = int(current_size * multiplier)
+                    if new_size > current_size:
+                        if last_warned_part[0] != current_part:
+                            logger.warning(f"分片 {current_part} 接近阈值 {self.SAFETY_THRESHOLD} (Unknown TotalSize)，平滑扩容: {current_size} -> {new_size}")
+                            last_warned_part[0] = current_part
+                        return new_size
+
             return current_size
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
