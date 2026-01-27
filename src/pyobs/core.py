@@ -337,17 +337,40 @@ class StreamUploader:
 
                         # 缓冲区达到分片大小 -> 提交上传
                         if buffer.tell() >= effective_part_size:
-                            data = buffer.getvalue()
+                            # 将指针重置到开头，准备读取
+                            buffer.seek(0)
 
-                            f = executor.submit(self._upload_part_with_retry, key, uid, part_number, data)
-                            futures[f] = part_number
+                            while True:
+                                # 计算当前剩余可读字节数
+                                remaining_len = buffer.getbuffer().nbytes - buffer.tell()
 
-                            part_number += 1
-                            buffer = BytesIO()  # 重置缓冲
+                                # 如果剩余数据不足一个分片，停止循环
+                                if remaining_len < effective_part_size:
+                                    break
 
-                            # 流控：防止内存溢出
-                            if len(futures) >= self.max_workers * 2:
-                                self._wait_and_collect(futures, parts_map)
+                                # 读取一个完整分片的数据
+                                data = buffer.read(effective_part_size)
+
+                                # 提交任务
+                                f = executor.submit(self._upload_part_with_retry, key, uid, part_number, data)
+                                futures[f] = part_number
+
+                                part_number += 1
+
+                                # 流控：防止内存溢出
+                                if len(futures) >= self.max_workers * 2:
+                                    self._wait_and_collect(futures, parts_map)
+
+                                # 为下一个分片重新计算大小 (虽然通常不会变，但在扩容临界点可能会变)
+                                effective_part_size = calculate_dynamic_part_size(
+                                    part_number, current_part_size, total_stream_bytes, total_size
+                                )
+
+                            # 读取剩余的所有数据
+                            remaining_data = buffer.read()
+                            # 重置缓冲，并将剩余数据写入
+                            buffer = BytesIO()
+                            buffer.write(remaining_data)
 
                 # 处理剩余数据（最后一个分片可以是任意大小）
                 if buffer.tell() > 0:
