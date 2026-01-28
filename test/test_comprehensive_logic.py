@@ -54,8 +54,8 @@ class TestPartSizeCalculation(unittest.TestCase):
         self.assertEqual(part_size_arg, expected_size)
         self.assertGreater(part_size_arg, 20 * 1024 * 1024)
     
-    def test_unknown_size_defaults_100mb(self):
-        """测试未知大小默认 100MB"""
+    def test_unknown_size_defaults_150mb(self):
+        """测试未知大小默认 150MB"""
         context = UploadContext("key", "uid", 0, 1)
         
         self.uploader.upload_stream(context, iter([]), total_size=None)
@@ -63,7 +63,7 @@ class TestPartSizeCalculation(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        self.assertEqual(part_size_arg, 100 * 1024 * 1024)
+        self.assertEqual(part_size_arg, 150 * 1024 * 1024)
     
     def test_respects_larger_configured_size(self):
         """测试如果用户配置了更大的分片，保持用户配置"""
@@ -181,8 +181,8 @@ class TestEdgeCases(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        # 应该当作未知大小处理，默认 100MB
-        self.assertEqual(part_size_arg, 100 * 1024 * 1024)
+        # 应该当作未知大小处理，默认 150MB
+        self.assertEqual(part_size_arg, 150 * 1024 * 1024)
     
     def test_very_large_file_639gb(self):
         """测试用户报告的 639GB 文件"""

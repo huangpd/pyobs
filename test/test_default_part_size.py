@@ -20,7 +20,7 @@ class TestDefaultPartSize(unittest.TestCase):
         self.patcher.stop()
 
     def test_default_part_size_increase(self):
-        """Verify that part size increases to 100MB if total_size is None"""
+        """Verify that part size increases to 150MB if total_size is None"""
         context = UploadContext("key", "uid", 0, 1)
         
         self.uploader.upload_stream(context, iter([]), total_size=None)
@@ -30,7 +30,7 @@ class TestDefaultPartSize(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        expected_size = 100 * 1024 * 1024
+        expected_size = 150 * 1024 * 1024
         self.assertEqual(part_size_arg, expected_size)
     
     def test_respect_larger_config(self):

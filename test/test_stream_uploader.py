@@ -222,7 +222,7 @@ class TestDynamicPartSizeAdjustment(unittest.TestCase):
         self.assertEqual(adjusted_part_size, expected_min_size)
 
     def test_no_adjustment_without_total_size(self):
-        """测试不传 total_size 时提升至 100MB"""
+        """测试不传 total_size 时提升至 150MB"""
         context = UploadContext("test_key", "test_id", offset=0, next_part=1)
 
         # Mock 初始化响应
@@ -242,8 +242,8 @@ class TestDynamicPartSizeAdjustment(unittest.TestCase):
         # 验证 _process_stream 被调用
         self.uploader._process_stream.assert_called_once()
         call_args = self.uploader._process_stream.call_args
-        # 分片大小应该提升至 100MB
-        self.assertEqual(call_args[0][5], 100 * 1024 * 1024)
+        # 分片大小应该提升至 150MB
+        self.assertEqual(call_args[0][5], 150 * 1024 * 1024)
 
 
 class TestPartNumberValidation(unittest.TestCase):
