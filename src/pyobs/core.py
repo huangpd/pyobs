@@ -529,7 +529,14 @@ class StreamUploader:
             self._final_parts_map = self._fetch_uploaded_parts_map(key, uid)
 
         if not self._final_parts_map:
-            raise Exception("未找到任何分片，无法合并文件")
+            # 空数据流：取消分片上传任务，静默返回
+            logger.warning(f"⚠️ 数据流为空（0 字节），跳过上传: {key}")
+            try:
+                self.client.abortMultipartUpload(self.bucket, key, uid)
+                logger.info(f"已取消空任务: {key}")
+            except Exception:
+                pass  # 忽略取消失败
+            return
 
         # 构造合并请求列表 (必须按 PartNum 排序)
         sorted_parts = [
