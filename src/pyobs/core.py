@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COM
 from obs import ObsClient, CompleteMultipartUploadRequest, CompletePart, ListMultipartUploadsRequest
 from tqdm import tqdm
 import http.client
+from .exceptions import PartLimitExceededError, PartUploadError
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -69,6 +70,7 @@ class StreamUploader:
 
     # --- 分片上传常量 ---
     MAX_PARTS = 10000  # OBS 分片上传的硬性上限
+    SAFE_PARTS_COUNT = 8000  # 安全分片数，预留 20% 缓冲应对 Content-Length 不准确
     SAFETY_THRESHOLD = 5000  # 调整为 5000，提早介入，避免后期内存激增
     MIN_PART_SIZE = 5 * 1024 * 1024  # 5MB (S3/OBS 协议要求前 N-1 个分片 >= 5MB)
 
@@ -90,6 +92,33 @@ class StreamUploader:
         self.part_size = part_size
         self.max_workers = 5  # 并发上传线程数
         self.max_retries = 5  # 单个分片上传失败重试次数
+
+    def abort_upload(self, object_key, upload_id=None):
+        """
+        取消指定的上传任务（清理已上传的分片）
+        :param object_key: OBS 目标路径
+        :param upload_id: (可选) 指定的 upload_id，如果不传则自动查找
+        :return: True 成功取消，False 未找到任务
+        """
+        if not upload_id:
+            # 自动查找该 key 的上传任务
+            upload_id, _, next_part = self._get_resume_info(object_key)
+            if not upload_id:
+                logger.info(f"未找到 {object_key} 的未完成上传任务")
+                return False
+            logger.info(f"找到任务: {upload_id}, 已有分片: {next_part - 1}")
+        
+        try:
+            resp = self.client.abortMultipartUpload(self.bucket, object_key, upload_id)
+            if resp.status < 300:
+                logger.info(f"✅ 已成功取消上传任务: {object_key} (ID: {upload_id})")
+                return True
+            else:
+                logger.error(f"取消失败: {resp.errorMessage}")
+                return False
+        except Exception as e:
+            logger.error(f"取消任务时发生错误: {e}")
+            return False
 
     def init_upload(self, object_key):
         """
@@ -148,26 +177,58 @@ class StreamUploader:
         # 动态调整分片大小
         current_part_size = self.part_size
         
-        # 策略更新 (User Request):
-        # 1. 如果用户设置 total_size -> 即使小于 200G 也可能保持默认小分片 (20MB)
-        #    但如果文件巨大，使用 total_size / 9000 计算分片大小
+        # 计算剩余可用分片数
+        remaining_parts = self.MAX_PARTS - context.next_part + 1
+        
+        # 策略更新：
+        # 1. 如果用户设置 total_size -> 根据剩余文件大小和剩余分片数计算
+        #    【修复】断点续传时也要重新计算，不仅限于 offset == 0
         if total_size and total_size > 0:
+            # 计算剩余需要上传的数据量
+            remaining_size = total_size - context.offset if context.offset > 0 else total_size
+            
+            # 使用更保守的安全分片数 (8000)，预留 20% 缓冲应对 Content-Length 不准确
+            # 对于续传场景，使用剩余分片数的 80% 作为安全值
             if context.offset == 0:
-                # 预留 1000 个分片作为安全缓冲 (MAX_PARTS=10000)
-                safe_parts_count = 9000 
-                # 向上取整
-                min_part_size = math.ceil(total_size / safe_parts_count)
-                
-                # 只有当计算出的分片大小 > 当前配置的大小时，才进行调整
-                # 意味着：如果文件只有 1GB，min_part_size ≈ 111KB。
-                # 此时我们依然使用 self.part_size (20MB)，保证效率。
-                if min_part_size > current_part_size:
-                    logger.warning(f"文件大小 ({total_size / 1024 / 1024 / 1024:.2f} GB) 较大，自动调整分片大小: {current_part_size / 1024 / 1024:.0f}MB -> {min_part_size / 1024 / 1024:.0f}MB (目标分片数 ~9000)")
-                    current_part_size = min_part_size
+                safe_parts_count = self.SAFE_PARTS_COUNT  # 新任务用 8000
+            else:
+                # 续传时，用剩余分片数的 80% 作为安全值
+                safe_parts_count = int(remaining_parts * 0.8)
+                safe_parts_count = max(safe_parts_count, 100)  # 至少保留 100 个分片
+            
+            # 向上取整计算最小分片大小
+            min_part_size = math.ceil(remaining_size / safe_parts_count)
+            
+            # 只有当计算出的分片大小 > 当前配置的大小时，才进行调整
+            if min_part_size > current_part_size:
+                if context.offset > 0:
+                    logger.warning(f"[断点续传] 剩余数据 ({remaining_size / 1024 / 1024 / 1024:.2f} GB)，"
+                                   f"剩余分片数 {remaining_parts}，"
+                                   f"调整分片大小: {current_part_size / 1024 / 1024:.0f}MB -> {min_part_size / 1024 / 1024:.0f}MB")
+                else:
+                    logger.warning(f"文件大小 ({total_size / 1024 / 1024 / 1024:.2f} GB) 较大，"
+                                   f"自动调整分片大小: {current_part_size / 1024 / 1024:.0f}MB -> {min_part_size / 1024 / 1024:.0f}MB "
+                                   f"(目标分片数 ~{safe_parts_count})")
+                current_part_size = min_part_size
+            
+            # 【新增】上传前验证：检查剩余分片数是否足够
+            estimated_parts_needed = math.ceil(remaining_size / current_part_size)
+            if estimated_parts_needed > remaining_parts:
+                raise PartLimitExceededError(
+                    f"分片数不足！剩余分片数: {remaining_parts}，"
+                    f"预计需要: {estimated_parts_needed}，"
+                    f"剩余数据: {remaining_size / 1024 / 1024 / 1024:.2f} GB，"
+                    f"当前分片大小: {current_part_size / 1024 / 1024:.0f} MB。"
+                    f"建议：放弃当前任务 (mode='wb') 并使用更大的分片大小重新上传。",
+                    remaining_parts=remaining_parts,
+                    estimated_parts=estimated_parts_needed,
+                    remaining_size=remaining_size,
+                    part_size=current_part_size
+                )
                     
         # 2. 如果用户没有设置 total_size (流式) -> 默认 150MB
         else:
-            # 强制提升到 150MB (支持 ~1.5TB)，推迟“紧急扩容”介入时间
+            # 强制提升到 150MB (支持 ~1.2TB with 8000 parts)，推迟"紧急扩容"介入时间
             DEFAULT_STREAM_PART_SIZE = 150 * 1024 * 1024
             if current_part_size < DEFAULT_STREAM_PART_SIZE:
                 logger.info(f"未知总大小，自动将分片大小从 {current_part_size / 1024 / 1024:.0f}MB 提升至 {DEFAULT_STREAM_PART_SIZE / 1024 / 1024:.0f}MB 以支持大文件")
@@ -394,7 +455,11 @@ class StreamUploader:
         """带重试机制的单个分片上传（增加详细日志）"""
         # 分片号校验：确保不超过 OBS 限制
         if p_num > self.MAX_PARTS:
-            raise Exception(f"分片号 {p_num} 超过上限 {self.MAX_PARTS}，无法继续上传")
+            raise PartLimitExceededError(
+                f"分片号 {p_num} 超过上限 {self.MAX_PARTS}，无法继续上传",
+                remaining_parts=0,
+                estimated_parts=p_num
+            )
 
         data_len = len(data)
 
@@ -411,7 +476,7 @@ class StreamUploader:
                     duration = time.time() - start_time
                     speed = (data_len / 1024 / 1024) / duration if duration > 0 else 0
                     # ✅ 打印详细的成功日志
-                    logger.debug(f"分片 #{p_num} 上传成功 | "
+                    logger.info(f"分片 #{p_num} 上传成功 | "
                                 f"大小: {data_len / 1024 / 1024:.2f}MB | "
                                 f"耗时: {duration:.1f}s | "
                                 f"速度: {speed:.1f}MB/s")
@@ -424,7 +489,7 @@ class StreamUploader:
                 logger.warning(f"❌ 分片 #{p_num} 发生异常: {ex}，正在重试 {i + 1}/{self.max_retries}...")
             # 失败后稍微等待一下再重试
             time.sleep(1 * (i + 1))
-        raise Exception(f"分片 #{p_num} 在 {self.max_retries} 次尝试后最终失败")
+        raise PartUploadError(f"分片 #{p_num} 在 {self.max_retries} 次尝试后最终失败", part_number=p_num)
 
     def _wait_and_collect(self, futures, parts_map):
         """等待部分任务完成，回收内存，收集 ETag"""

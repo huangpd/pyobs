@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git add pyproject.toml src/pyobs/core.py test/test_stream_uploader.py)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: implement dynamic part size adjustment for large file uploads\n\n- Add dynamic part size calculation when total_size is provided\n- Add safety threshold at 8000 parts to auto-expand remaining parts\n- Update threshold from 9000 to 8000 for better safety margin\n- Add part number validation to prevent exceeding OBS limit of 10000\n- Add comprehensive unit tests for dynamic adjustment logic\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")"
-    ]
-  }
-}

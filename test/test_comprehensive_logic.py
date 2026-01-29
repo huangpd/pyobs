@@ -25,7 +25,7 @@ class TestPartSizeCalculation(unittest.TestCase):
         self.patcher.stop()
 
     def test_small_file_keeps_default_20mb(self):
-        """测试小文件（<180GB）保持默认 20MB 分片"""
+        """测试小文件（<160GB）保持默认 20MB 分片"""
         context = UploadContext("key", "uid", 0, 1)
         
         # 100GB 文件
@@ -35,11 +35,11 @@ class TestPartSizeCalculation(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        # 100GB / 9000 ≈ 11.6MB < 20MB，应该保持 20MB
+        # 100GB / 8000 ≈ 13.4MB < 20MB，应该保持 20MB
         self.assertEqual(part_size_arg, 20 * 1024 * 1024)
     
     def test_large_file_auto_adjusts(self):
-        """测试大文件（>180GB）自动调整分片大小"""
+        """测试大文件（>160GB）自动调整分片大小"""
         context = UploadContext("key", "uid", 0, 1)
         
         # 500GB 文件
@@ -49,13 +49,14 @@ class TestPartSizeCalculation(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        # 500GB / 9000 ≈ 58.3MB > 20MB，应该调整
-        expected_size = (total_size + 9000 - 1) // 9000
+        # 500GB / 8000 ≈ 67.1MB > 20MB，应该调整
+        import math
+        expected_size = math.ceil(total_size / 8000)
         self.assertEqual(part_size_arg, expected_size)
         self.assertGreater(part_size_arg, 20 * 1024 * 1024)
     
-    def test_unknown_size_defaults_100mb(self):
-        """测试未知大小默认 100MB"""
+    def test_unknown_size_defaults_150mb(self):
+        """测试未知大小默认 150MB"""
         context = UploadContext("key", "uid", 0, 1)
         
         self.uploader.upload_stream(context, iter([]), total_size=None)
@@ -63,7 +64,7 @@ class TestPartSizeCalculation(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        self.assertEqual(part_size_arg, 100 * 1024 * 1024)
+        self.assertEqual(part_size_arg, 150 * 1024 * 1024)
     
     def test_respects_larger_configured_size(self):
         """测试如果用户配置了更大的分片，保持用户配置"""
@@ -157,19 +158,20 @@ class TestEdgeCases(unittest.TestCase):
     def tearDown(self):
         self.patcher.stop()
 
-    def test_exactly_180gb_file(self):
-        """测试临界值 180GB 文件"""
+    def test_exactly_160gb_file(self):
+        """测试临界值 160GB 文件"""
         context = UploadContext("key", "uid", 0, 1)
         
-        # 180GB = 9000 * 20MB
-        total_size = 180 * 1024**3
+        # 160GB = 8000 * 20MB
+        total_size = 160 * 1024**3
         self.uploader.upload_stream(context, iter([]), total_size=total_size)
         
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        # 180GB / 9000 = 20MB，应该等于默认值
-        expected = (total_size + 9000 - 1) // 9000
+        # 160GB / 8000 = 20MB，应该等于默认值
+        import math
+        expected = math.ceil(total_size / 8000)
         self.assertEqual(part_size_arg, expected)
     
     def test_zero_total_size(self):
@@ -181,8 +183,8 @@ class TestEdgeCases(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        # 应该当作未知大小处理，默认 100MB
-        self.assertEqual(part_size_arg, 100 * 1024 * 1024)
+        # 应该当作未知大小处理，默认 150MB
+        self.assertEqual(part_size_arg, 150 * 1024 * 1024)
     
     def test_very_large_file_639gb(self):
         """测试用户报告的 639GB 文件"""
@@ -194,13 +196,14 @@ class TestEdgeCases(unittest.TestCase):
         call_args = self.uploader._process_stream.call_args
         part_size_arg = call_args[0][5]
         
-        # 639GB / 9000 ≈ 74.5MB
-        expected = (total_size + 9000 - 1) // 9000
+        # 639GB / 8000 ≈ 85.7MB
+        import math
+        expected = math.ceil(total_size / 8000)
         self.assertEqual(part_size_arg, expected)
         
-        # 验证分片数不会超过 9000
+        # 验证分片数不会超过 8000
         estimated_parts = total_size / part_size_arg
-        self.assertLessEqual(estimated_parts, 9000)
+        self.assertLessEqual(estimated_parts, 8000)
 
 
 if __name__ == '__main__':

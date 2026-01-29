@@ -43,8 +43,9 @@ class TestLogThrottling(unittest.TestCase):
         context = UploadContext("key", "uid", 0, 1)
         
         # Simulate a stream that produces enough data for multiple parts
-        # Total size big enough to force adjustment
-        total_size = 10000 
+        # 调整 total_size 使其与 MAX_PARTS * part_size 匹配，避免触发分片不足验证
+        # MAX_PARTS = 5, part_size = 100, 所以最大容量 = 500 bytes
+        total_size = 300  # 小于 500，不会触发分片不足
         
         # Determine data chunks.
         # We need enough chunks to call calculate_dynamic_part_size multiple times for the SAME part.
