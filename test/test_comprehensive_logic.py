@@ -93,7 +93,7 @@ class TestEmergencyExpansion(unittest.TestCase):
         self.uploader = StreamUploader(ak="test", sk="test", server="test", bucket_name="test")
         self.uploader._upload_part_with_retry = MagicMock(return_value="etag")
         self.uploader._complete_upload = MagicMock()
-        self.uploader._fetch_uploaded_parts_map = MagicMock(return_value={})
+        self.uploader._fetch_uploaded_parts_map = MagicMock(return_value=({}, 0))
 
     def tearDown(self):
         self.patcher.stop()
