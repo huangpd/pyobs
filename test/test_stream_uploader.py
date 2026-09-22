@@ -40,6 +40,25 @@ class TestStreamUploaderInit(unittest.TestCase):
                 ak="test_ak", sk="test_sk", server="test_server", bucket_name="test_bucket"
             )
             self.assertEqual(uploader.part_size, 20 * 1024 * 1024)
+            self.assertEqual(uploader.max_workers, 5)
+
+    def test_init_custom_max_workers(self):
+        """测试 max_workers 可通过构造函数配置"""
+        with patch('pyobs.core.ObsClient') as MockObsClient:
+            uploader = StreamUploader(
+                ak="test_ak", sk="test_sk", server="test_server", bucket_name="test_bucket",
+                max_workers=16,
+            )
+            self.assertEqual(uploader.max_workers, 16)
+
+    def test_init_invalid_max_workers(self):
+        """测试 max_workers < 1 时抛出 ValueError"""
+        with patch('pyobs.core.ObsClient') as MockObsClient:
+            with self.assertRaises(ValueError):
+                StreamUploader(
+                    ak="test_ak", sk="test_sk", server="test_server", bucket_name="test_bucket",
+                    max_workers=0,
+                )
 
 
 class TestStreamUploader(unittest.TestCase):
@@ -160,7 +179,7 @@ class TestStreamUploader(unittest.TestCase):
         start_part = 1
         
         # Temporarily mock _fetch_uploaded_parts_map to avoid network call
-        self.uploader._fetch_uploaded_parts_map = MagicMock(return_value={})
+        self.uploader._fetch_uploaded_parts_map = MagicMock(return_value=({}, 0))
 
         uploaded_bytes = self.uploader._process_stream(
             iterator(), key, uid, start_part, 25, 10
